@@ -5,6 +5,7 @@ package preflight
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,9 +16,10 @@ import (
 
 const preflightFlag = "preflight"
 
-// Registry is a collection of preflight checks
+// Registry is a collection of preflight checks and associated configuration
 type Registry struct {
-	known map[string]Check
+	known  map[string]Check
+	config map[string]any
 }
 
 // NewRegistry will return a new *Registry with the
@@ -61,23 +63,39 @@ func (c *Registry) Set(s string) error {
 		return nil
 	}
 
-	mappings := strings.Split(s, ",")
-	for _, mapping := range mappings {
-		set := strings.SplitN(mapping, "=", 2)
-		if len(set) != 2 {
-			return fmt.Errorf("unable to parse check definition %q, too many '='. Must follow the format check={true||false}", mapping)
-		}
-		key, value := set[0], set[1]
+	fmt.Printf("JSON input: %q\n", s)
+	if !json.Valid([]byte(s)) {
+		return fmt.Errorf("Invalid JSON format: %s", s)
+	}
 
-		if _, ok := c.known[key]; !ok {
-			return fmt.Errorf("unknown preflight check %q specified", key)
-		}
+	err := json.Unmarshal([]byte(s), &c.config)
+	if err != nil {
+		return err
+	}
 
-		enabled, err := strconv.ParseBool(value)
+	for name, values := range c.config {
+		_, ok := c.known[name]
+		if !ok {
+			return fmt.Errorf("unknown preflight check %q specified", name)
+		}
+		config := values.(map[string]any)
+		if config == nil {
+			return fmt.Errorf("unable to parse config %v", values)
+		}
+		// Look for enabled
+		enableStr, ok := config["enabled"].(string)
+		if ok {
+			enabled, err := strconv.ParseBool(enableStr)
+			if err != nil {
+				return fmt.Errorf("unable to parse boolean representation of %q: %w", enableStr, err)
+			}
+			c.known[name].SetEnabled(enabled)
+		}
+		// Give the check it's config
+		err = c.known[name].SetConfig(config)
 		if err != nil {
-			return fmt.Errorf("unable to parse boolean representation of %q: %w", mapping, err)
+			return fmt.Error("unable to parse config for %q: %w", name, err)
 		}
-		c.known[key].SetEnabled(enabled)
 	}
 	return nil
 }
